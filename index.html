@@ -30,10 +30,10 @@
         60,
         window.innerWidth / window.innerHeight,
         0.1,
-        100
+        150
       );
-      camera.position.set(0, 5, 10);
-      camera.lookAt(0, 0, 0);
+      camera.position.set(0, 6, 12);
+      camera.lookAt(0, 1, 0);
 
       const renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setSize(window.innerWidth, window.innerHeight);
@@ -70,19 +70,52 @@
       scene.add(groundMesh);
       pairs.push({ mesh: groundMesh, body: groundBody });
 
-      const boxBody = new CANNON.Body({
-        mass: 1,
-        shape: new CANNON.Box(new CANNON.Vec3(0.5, 0.5, 0.5)),
-        position: new CANNON.Vec3(0, 4, 0),
-      });
-      world.addBody(boxBody);
+      const carGroup = new THREE.Group();
+      scene.add(carGroup);
 
-      const boxMesh = new THREE.Mesh(
-        new THREE.BoxGeometry(1, 1, 1),
-        new THREE.MeshStandardMaterial({ color: 0xff7f50 })
+      const bodySize = { x: 2.4, y: 0.7, z: 1.4 };
+      const bodyMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(bodySize.x, bodySize.y, bodySize.z),
+        new THREE.MeshStandardMaterial({ color: 0xff7f50, flatShading: true })
       );
-      scene.add(boxMesh);
-      pairs.push({ mesh: boxMesh, body: boxBody });
+      bodyMesh.position.y = 0.65;
+      carGroup.add(bodyMesh);
+
+      const wheelSize = { x: 0.45, y: 0.45, z: 0.3 };
+      const wheelGeometry = new THREE.BoxGeometry(wheelSize.x, wheelSize.y, wheelSize.z);
+      const wheelMaterial = new THREE.MeshStandardMaterial({ color: 0x1f1f1f, flatShading: true });
+      const wheelOffsets = [
+        new THREE.Vector3(0.75, 0.3, 0.65),
+        new THREE.Vector3(-0.75, 0.3, 0.65),
+        new THREE.Vector3(0.75, 0.3, -0.65),
+        new THREE.Vector3(-0.75, 0.3, -0.65),
+      ];
+
+      for (const offset of wheelOffsets) {
+        const wheelMesh = new THREE.Mesh(wheelGeometry, wheelMaterial);
+        wheelMesh.position.copy(offset);
+        carGroup.add(wheelMesh);
+      }
+
+      const carBody = new CANNON.Body({
+        mass: 6,
+        position: new CANNON.Vec3(0, 3, 0),
+        linearDamping: 0.35,
+        angularDamping: 0.45,
+      });
+      carBody.addShape(
+        new CANNON.Box(new CANNON.Vec3(bodySize.x * 0.5, bodySize.y * 0.5, bodySize.z * 0.5)),
+        new CANNON.Vec3(0, bodyMesh.position.y, 0)
+      );
+
+      for (const offset of wheelOffsets) {
+        carBody.addShape(
+          new CANNON.Box(new CANNON.Vec3(wheelSize.x * 0.5, wheelSize.y * 0.5, wheelSize.z * 0.5)),
+          new CANNON.Vec3(offset.x, offset.y, offset.z)
+        );
+      }
+      world.addBody(carBody);
+      pairs.push({ mesh: carGroup, body: carBody });
 
       // Basic keyboard state (WASD)
       const keys = {
@@ -112,22 +145,56 @@
 
       const clock = new THREE.Clock();
       const fixedTimeStep = 1 / 60;
+      const moveForce = 32;
+      const steerTorque = 20;
+      const forwardLocal = new CANNON.Vec3(0, 0, -1);
+      const forwardWorld = new CANNON.Vec3();
+      const forceVector = new CANNON.Vec3();
+      const upAxis = new CANNON.Vec3(0, 1, 0);
+      const currentVelocity = new CANNON.Vec3();
+      const targetCameraPos = new THREE.Vector3();
+      const carForward = new THREE.Vector3();
+      const cameraUpOffset = new THREE.Vector3(0, 4, 0);
 
       function animate() {
         const delta = Math.min(clock.getDelta(), 0.1);
         world.step(fixedTimeStep, delta, 3);
 
-        // Example movement force from keyboard state
-        const moveForce = 5;
-        if (keys.KeyW) boxBody.applyForce(new CANNON.Vec3(0, 0, -moveForce), boxBody.position);
-        if (keys.KeyS) boxBody.applyForce(new CANNON.Vec3(0, 0, moveForce), boxBody.position);
-        if (keys.KeyA) boxBody.applyForce(new CANNON.Vec3(-moveForce, 0, 0), boxBody.position);
-        if (keys.KeyD) boxBody.applyForce(new CANNON.Vec3(moveForce, 0, 0), boxBody.position);
+        carBody.quaternion.vmult(forwardLocal, forwardWorld);
+
+        if (keys.KeyW) {
+          forwardWorld.scale(moveForce, forceVector);
+          carBody.applyForce(forceVector, carBody.position);
+        }
+        if (keys.KeyS) {
+          forwardWorld.scale(-moveForce, forceVector);
+          carBody.applyForce(forceVector, carBody.position);
+        }
+
+        currentVelocity.copy(carBody.velocity);
+        currentVelocity.y = 0;
+        const speed = currentVelocity.length();
+        if (speed > 0.2) {
+          const steerInput = (keys.KeyA ? 1 : 0) - (keys.KeyD ? 1 : 0);
+          if (steerInput !== 0) {
+            const directionSign = Math.sign(currentVelocity.dot(forwardWorld)) || 1;
+            upAxis.scale(steerInput * steerTorque * speed * 0.08 * directionSign, forceVector);
+            carBody.torque.vadd(forceVector, carBody.torque);
+          }
+        }
 
         for (const { mesh, body } of pairs) {
           mesh.position.copy(body.position);
           mesh.quaternion.copy(body.quaternion);
         }
+
+        carForward.set(0, 0, -1).applyQuaternion(carGroup.quaternion);
+        targetCameraPos
+          .copy(carGroup.position)
+          .addScaledVector(carForward, -8)
+          .add(cameraUpOffset);
+        camera.position.lerp(targetCameraPos, 0.1);
+        camera.lookAt(carGroup.position.x, carGroup.position.y + 1, carGroup.position.z);
 
         renderer.render(scene, camera);
         requestAnimationFrame(animate);
