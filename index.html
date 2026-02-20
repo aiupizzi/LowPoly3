@@ -53,8 +53,16 @@
         gravity: new CANNON.Vec3(0, -9.82, 0),
       });
 
+      world.defaultContactMaterial.friction = 0.35;
+      world.defaultContactMaterial.restitution = 0.08;
+
       // Mesh/body pairs to sync every frame
       const pairs = [];
+      const instancedSyncGroups = [];
+      const tmpMatrix = new THREE.Matrix4();
+      const tmpPosition = new THREE.Vector3();
+      const tmpQuaternion = new THREE.Quaternion();
+      const tmpScale = new THREE.Vector3(1, 1, 1);
 
       const groundBody = new CANNON.Body({ mass: 0 });
       const groundShape = new CANNON.Plane();
@@ -116,6 +124,88 @@
       }
       world.addBody(carBody);
       pairs.push({ mesh: carGroup, body: carBody });
+
+      function spawnVoxelCity() {
+        const gridSize = 3;
+        const spacing = 4;
+        const footprintSize = 2;
+        const minHeight = 3;
+        const maxHeight = 8;
+        const blockSize = 1;
+        const blockHalf = blockSize * 0.5;
+        const cityOffset = new THREE.Vector3(0, 0, -18);
+        const randomColor = () => 0x808080 + Math.floor(Math.random() * 0x3f3f3f);
+        const voxelMaterial = new CANNON.Material('voxelBlock');
+        voxelMaterial.friction = 0.18;
+        voxelMaterial.restitution = 0.28;
+
+        let totalBlocks = 0;
+        const buildingHeights = [];
+        for (let gx = 0; gx < gridSize; gx += 1) {
+          buildingHeights[gx] = [];
+          for (let gz = 0; gz < gridSize; gz += 1) {
+            const height = minHeight + Math.floor(Math.random() * (maxHeight - minHeight + 1));
+            buildingHeights[gx][gz] = height;
+            totalBlocks += footprintSize * footprintSize * height;
+          }
+        }
+
+        const blockGeometry = new THREE.BoxGeometry(blockSize, blockSize, blockSize);
+        const blockMaterial = new THREE.MeshStandardMaterial({
+          color: 0xb0b0b0,
+          roughness: 0.6,
+          metalness: 0.05,
+          vertexColors: true,
+        });
+        const blockMesh = new THREE.InstancedMesh(blockGeometry, blockMaterial, totalBlocks);
+        blockMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        blockMesh.castShadow = false;
+        blockMesh.receiveShadow = true;
+
+        const color = new THREE.Color();
+        const bodies = [];
+        let blockIndex = 0;
+
+        for (let gx = 0; gx < gridSize; gx += 1) {
+          for (let gz = 0; gz < gridSize; gz += 1) {
+            const baseX = (gx - (gridSize - 1) * 0.5) * spacing + cityOffset.x;
+            const baseZ = (gz - (gridSize - 1) * 0.5) * spacing + cityOffset.z;
+            const height = buildingHeights[gx][gz];
+
+            for (let lx = 0; lx < footprintSize; lx += 1) {
+              for (let lz = 0; lz < footprintSize; lz += 1) {
+                for (let ly = 0; ly < height; ly += 1) {
+                  const body = new CANNON.Body({
+                    mass: 0.65,
+                    linearDamping: 0.12,
+                    angularDamping: 0.08,
+                    material: voxelMaterial,
+                    shape: new CANNON.Box(new CANNON.Vec3(blockHalf, blockHalf, blockHalf)),
+                    position: new CANNON.Vec3(
+                      baseX + (lx - (footprintSize - 1) * 0.5) * blockSize,
+                      blockHalf + ly * blockSize,
+                      baseZ + (lz - (footprintSize - 1) * 0.5) * blockSize
+                    ),
+                  });
+
+                  world.addBody(body);
+                  bodies.push(body);
+
+                  color.setHex(randomColor());
+                  blockMesh.setColorAt(blockIndex, color);
+                  blockIndex += 1;
+                }
+              }
+            }
+          }
+        }
+
+        blockMesh.instanceColor.needsUpdate = true;
+        scene.add(blockMesh);
+        instancedSyncGroups.push({ mesh: blockMesh, bodies });
+      }
+
+      spawnVoxelCity();
 
       // Basic keyboard state (WASD)
       const keys = {
@@ -186,6 +276,17 @@
         for (const { mesh, body } of pairs) {
           mesh.position.copy(body.position);
           mesh.quaternion.copy(body.quaternion);
+        }
+
+        for (const { mesh, bodies } of instancedSyncGroups) {
+          for (let i = 0; i < bodies.length; i += 1) {
+            const body = bodies[i];
+            tmpPosition.copy(body.position);
+            tmpQuaternion.copy(body.quaternion);
+            tmpMatrix.compose(tmpPosition, tmpQuaternion, tmpScale);
+            mesh.setMatrixAt(i, tmpMatrix);
+          }
+          mesh.instanceMatrix.needsUpdate = true;
         }
 
         carForward.set(0, 0, -1).applyQuaternion(carGroup.quaternion);
